@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zork-Style Text Adventure</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  #output { font-family: 'Courier New', monospace; }
+  #input-line { caret-color: #00ff00; }
+  #output .room-title { color: #7ec8e3; font-weight: bold; }
+  #output .item-text { color: #ffd700; }
+  #output .error-text { color: #ff6b6b; }
+  #output .success-text { color: #98fb98; }
+  #output .hint-text { color: #dda0dd; }
+</style>
+</head>
+<body class="bg-gray-950 text-green-400 min-h-screen flex flex-col p-4">
+<div class="max-w-2xl mx-auto w-full flex-1 flex flex-col">
+  <div class="text-center mb-4">
+    <h1 class="text-2xl font-bold text-green-300">DUNGEON OF THE LOST KEY</h1>
+    <p class="text-xs text-green-600">A Zork-style text adventure</p>
+  </div>
+
+  <div class="flex gap-2 mb-2">
+    <button id="btn-save" class="bg-green-900 hover:bg-green-800 text-green-300 px-3 py-1 rounded text-xs">Save</button>
+    <button id="btn-load" class="bg-green-900 hover:bg-green-800 text-green-300 px-3 py-1 rounded text-xs">Load</button>
+    <button id="btn-new" class="bg-red-900 hover:bg-red-800 text-red-300 px-3 py-1 rounded text-xs">New Game</button>
+  </div>
+
+  <div id="output" class="flex-1 bg-black rounded-lg p-4 overflow-y-auto text-sm leading-relaxed min-h-64 max-h-96 border border-green-900"></div>
+
+  <div class="flex mt-3 gap-2">
+    <span class="text-green-600 font-mono text-sm self-center">&gt;</span>
+    <input id="input-line" type="text" autocomplete="off" spellcheck="false"
+      class="flex-1 bg-black text-green-400 border border-green-800 rounded px-3 py-2 font-mono text-sm focus:outline-none focus:border-green-500"
+      placeholder="enter command...">
+    <button id="btn-enter" class="bg-green-800 hover:bg-green-700 text-green-200 px-4 py-2 rounded text-sm">Enter</button>
+  </div>
+  <p class="text-xs text-green-800 mt-1 text-center">Commands: go [dir], look, take [item], drop [item], inventory, use [item], open [item], read [item], help</p>
+</div>
+
+<script>
+function escapeHtml(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+
+// World definition
+const WORLD = {
+  'forest-clearing': {
+    name: 'Forest Clearing',
+    desc: 'You stand in a sunlit clearing. Ancient trees surround you. A mossy path leads north, and a dark cave mouth yawns to the east.',
+    exits: { north: 'guard-room', east: 'cave-entrance' },
+    items: ['rope'],
+    locked: {}
+  },
+  'cave-entrance': {
+    name: 'Cave Entrance',
+    desc: 'The cave entrance is damp and smells of earth. Flickering light barely penetrates inside. You can go west back to the clearing, north into the dark corridor, or south to the underground lake.',
+    exits: { west: 'forest-clearing', north: 'dark-corridor', south: 'underground-lake' },
+    items: ['torch'],
+    locked: {}
+  },
+  'dark-corridor': {
+    name: 'Dark Corridor',
+    desc: 'A pitch-black corridor. Without a light source, you stumble blindly.',
+    descLight: 'The corridor is long and carved from black stone. Ancient carvings line the walls. A heavy door to the north is sealed with an iron lock. The cave entrance is back south.',
+    exits: { south: 'cave-entrance', north: 'treasure-chamber' },
+    items: [],
+    locked: { north: 'key' },
+    requiresLight: true
+  },
+  'treasure-chamber': {
+    name: 'Treasure Chamber',
+    desc: 'A breathtaking chamber filled with ancient treasure! A golden coin gleams on a stone pedestal. Passages lead south and east.',
+    exits: { south: 'dark-corridor', east: 'library' },
+    items: ['gold-coin'],
+    locked: {}
+  },
+  'underground-lake': {
+    name: 'Underground Lake',
+    desc: 'A vast underground lake stretches before you. The water glitters with bioluminescence. A small boat is moored here but seems unmovable. The cave entrance is to the north.',
+    exits: { north: 'cave-entrance' },
+    items: ['ancient-tome'],
+    locked: {}
+  },
+  'guard-room': {
+    name: 'Guard Room',
+    desc: 'A dusty guard room with a broken table and scattered bones. A rusty key hangs on the wall! Exits lead south to the forest and east to the library.',
+    exits: { south: 'forest-clearing', east: 'library' },
+    items: ['key'],
+    locked: {}
+  },
+  'library': {
+    name: 'Underground Library',
+    desc: 'Rows of crumbling bookshelves line the walls. Faded texts speak of ancient magic. Exits: west to guard room, east to exit hall, south to treasure chamber.',
+    exits: { west: 'guard-room', east: 'exit-hall', south: 'treasure-chamber' },
+    items: [],
+    locked: {}
+  },
+  'exit-hall': {
+    name: 'Exit Hall',
+    desc: 'A grand hall with a shaft of daylight streaming from above. A rope ladder hangs tantalizingly — if only you had a rope! The library is to the west.',
+    descRope: 'A grand hall with a shaft of daylight streaming from above. The rope ladder is set up and ready to climb! The library is to the west.',
+    exits: { west: 'library', up: 'VICTORY' },
+    items: [],
+    locked: { up: 'rope-ladder' }
+  }
+};
+
+const ITEM_DESC = {
+  'torch': 'A wooden torch, still usable.',
+  'key': 'A rusty iron key.',
+  'ancient-tome': 'A tome written in an ancient language. Hard to decipher, but you make out "beware the dark".',
+  'sword': 'A serviceable short sword.',
+  'gold-coin': 'A gleaming gold coin stamped with an ancient king\'s face.',
+  'rope': 'A coil of strong rope.'
+};
+
+const ITEM_NAMES = {
+  'torch': 'torch', 'key': 'key', 'tome': 'ancient-tome', 'ancient-tome': 'ancient-tome',
+  'coin': 'gold-coin', 'gold': 'gold-coin', 'gold-coin': 'gold-coin',
+  'rope': 'rope', 'sword': 'sword'
+};
+
+let state = null;
+
+function newGame() {
+  // Deep copy world items
+  state = {
+    room: 'forest-clearing',
+    inventory: [],
+    roomItems: {},
+    ropeUsed: false,
+    won: false,
+    moves: 0
+  };
+  for (const [id, r] of Object.entries(WORLD)) {
+    state.roomItems[id] = [...r.items];
+  }
+  clearOutput();
+  print('<span class="room-title">DUNGEON OF THE LOST KEY</span>');
+  print('You awaken at the edge of a strange forest. Somewhere deep below lies a golden coin — and freedom.');
+  print('Type <span class="hint-text">help</span> for commands.');
+  print('');
+  doLook();
+}
+
+function clearOutput() {
+  document.getElementById('output').innerHTML = '';
+}
+
+function print(html) {
+  const out = document.getElementById('output');
+  const line = document.createElement('div');
+  line.innerHTML = html;
+  out.appendChild(line);
+  out.scrollTop = out.scrollHeight;
+}
+
+function printText(text) {
+  print(escapeHtml(text));
+}
+
+function currentRoom() { return WORLD[state.room]; }
+
+function doLook() {
+  const r = currentRoom();
+  print(`<span class="room-title">${escapeHtml(r.name)}</span>`);
+  let desc = r.desc;
+  if (r.requiresLight && !state.inventory.includes('torch')) {
+    print('It is too dark to see anything. You need a light source.');
+    return;
+  }
+  if (r.descLight && state.inventory.includes('torch')) desc = r.descLight;
+  if (state.room === 'exit-hall' && state.ropeUsed && r.descRope) desc = r.descRope;
+  print(escapeHtml(desc));
+  const items = state.roomItems[state.room];
+  if (items.length > 0) {
+    print(`<span class="item-text">Items: ${items.map(escapeHtml).join(', ')}</span>`);
+  }
+  const exits = Object.keys(r.exits).join(', ');
+  print(`Exits: ${escapeHtml(exits)}`);
+}
+
+function resolveItem(word) {
+  return ITEM_NAMES[word.toLowerCase()] || word.toLowerCase();
+}
+
+function processCommand(input) {
+  const raw = input.trim();
+  if (!raw) return;
+  print(`<span class="text-green-700">&gt; ${escapeHtml(raw)}</span>`);
+  if (state.won) { print('The game is over. Start a new game!'); return; }
+
+  const parts = raw.toLowerCase().split(/\s+/);
+  const verb = parts[0];
+  const noun = parts.slice(1).join(' ');
+
+  state.moves++;
+
+  switch(verb) {
+    case 'look': case 'l': case 'examine': doLook(); break;
+    case 'go': case 'move': case 'walk': doGo(noun); break;
+    case 'north': case 'n': doGo('north'); break;
+    case 'south': case 's': doGo('south'); break;
+    case 'east': case 'e': doGo('east'); break;
+    case 'west': case 'w': doGo('west'); break;
+    case 'up': case 'u': doGo('up'); break;
+    case 'take': case 'get': case 'pick': doTake(noun); break;
+    case 'drop': doDrop(noun); break;
+    case 'inventory': case 'i': case 'inv': doInventory(); break;
+    case 'use': doUse(noun); break;
+    case 'open': doOpen(noun); break;
+    case 'read': doRead(noun); break;
+    case 'help': case '?': doHelp(); break;
+    case 'quit': case 'q': print('Type "new" to start over.'); break;
+    case 'new': newGame(); break;
+    default: print(`<span class="error-text">I don't understand "${escapeHtml(verb)}".</span>`);
+  }
+}
+
+function doGo(dir) {
+  const r = currentRoom();
+  if (!dir) { print('<span class="error-text">Go where?</span>'); return; }
+  const dest = r.exits[dir];
+  if (!dest) { print(`<span class="error-text">You can't go ${escapeHtml(dir)} from here.</span>`); return; }
+
+  // Check lock
+  const lockItem = r.locked[dir];
+  if (lockItem) {
+    if (lockItem === 'key' && !state.inventory.includes('key')) {
+      print('<span class="error-text">The door is locked. You need a key.</span>'); return;
+    }
+    if (lockItem === 'rope-ladder' && !state.ropeUsed) {
+      print('<span class="error-text">The rope ladder is up there but you need rope to secure it. Use your rope here.</span>'); return;
+    }
+  }
+  if (r.requiresLight && !state.inventory.includes('torch')) {
+    print('<span class="error-text">Too dark to move further. Find a light source!</span>'); return;
+  }
+  if (dest === 'VICTORY') {
+    doVictory(); return;
+  }
+  state.room = dest;
+  doLook();
+}
+
+function doTake(noun) {
+  if (!noun) { print('<span class="error-text">Take what?</span>'); return; }
+  const item = resolveItem(noun);
+  const items = state.roomItems[state.room];
+  const idx = items.indexOf(item);
+  if (idx === -1) { print(`<span class="error-text">There's no ${escapeHtml(noun)} here.</span>`); return; }
+  items.splice(idx, 1);
+  state.inventory.push(item);
+  print(`<span class="success-text">Taken: ${escapeHtml(item)}</span>`);
+}
+
+function doDrop(noun) {
+  if (!noun) { print('<span class="error-text">Drop what?</span>'); return; }
+  const item = resolveItem(noun);
+  const idx = state.inventory.indexOf(item);
+  if (idx === -1) { print(`<span class="error-text">You don't have ${escapeHtml(noun)}.</span>`); return; }
+  state.inventory.splice(idx, 1);
+  state.roomItems[state.room].push(item);
+  print(`<span class="success-text">Dropped: ${escapeHtml(item)}</span>`);
+}
+
+function doInventory() {
+  if (state.inventory.length === 0) { print('You are empty-handed.'); return; }
+  print(`<span class="item-text">Carrying: ${state.inventory.map(escapeHtml).join(', ')}</span>`);
+}
+
+function doUse(noun) {
+  if (!noun) { print('<span class="error-text">Use what?</span>'); return; }
+  const item = resolveItem(noun);
+  if (!state.inventory.includes(item)) { print(`<span class="error-text">You don't have ${escapeHtml(noun)}.</span>`); return; }
+  if (item === 'rope' && state.room === 'exit-hall') {
+    state.ropeUsed = true;
+    print('<span class="success-text">You tie the rope to the rope ladder securing it. You can now climb up!</span>');
+  } else if (item === 'torch') {
+    print('<span class="success-text">The torch lights your way.</span>');
+  } else if (item === 'key' && state.room === 'dark-corridor') {
+    print('<span class="success-text">You unlock the door to the north!</span>');
+    WORLD['dark-corridor'].locked = {};
+  } else {
+    print(`You use the ${escapeHtml(item)}, but nothing special happens.`);
+  }
+}
+
+function doOpen(noun) {
+  if (!noun) { print('<span class="error-text">Open what?</span>'); return; }
+  const item = resolveItem(noun);
+  if (item === 'door' && state.room === 'dark-corridor') {
+    if (state.inventory.includes('key')) {
+      print('<span class="success-text">You unlock and open the door with the key! Path to the north is clear.</span>');
+      WORLD['dark-corridor'].locked = {};
+    } else {
+      print('<span class="error-text">The door is locked. You need a key.</span>');
+    }
+  } else {
+    print(`You can't open that here.`);
+  }
+}
+
+function doRead(noun) {
+  if (!noun) { print('<span class="error-text">Read what?</span>'); return; }
+  const item = resolveItem(noun);
+  if (item === 'ancient-tome') {
+    if (state.inventory.includes('ancient-tome') || state.roomItems[state.room].includes('ancient-tome')) {
+      print('<span class="hint-text">"Seek the key in the room of the fallen guard. The coin awaits beyond the locked dark. Climb only when the way is secured."</span>');
+    } else {
+      print('<span class="error-text">There\'s no tome here.</span>');
+    }
+  } else {
+    print(`There's nothing interesting to read about ${escapeHtml(noun)}.`);
+  }
+}
+
+function doHelp() {
+  print('<span class="hint-text">Commands:</span>');
+  print('go [north/south/east/west/up] — move between rooms');
+  print('look (or l) — describe current room');
+  print('take [item] / drop [item] — pick up or put down items');
+  print('inventory (or i) — list what you\'re carrying');
+  print('use [item] — use an item in context');
+  print('open [door/chest] — open something');
+  print('read [item] — read readable items');
+  print('<span class="hint-text">Goal: Reach the Exit Hall with the gold coin!</span>');
+}
+
+function doVictory() {
+  if (!state.inventory.includes('gold-coin')) {
+    print('<span class="error-text">You reach the surface but empty-handed. Return for the gold coin first!</span>');
+    return;
+  }
+  state.won = true;
+  print('');
+  print('<span class="success-text">★★★ VICTORY! ★★★</span>');
+  print('<span class="success-text">You climb the rope ladder and burst into golden sunlight, the ancient gold coin glinting in your hand!</span>');
+  print(`<span class="success-text">You escaped the Dungeon of the Lost Key in ${state.moves} moves!</span>`);
+  localStorage.removeItem('text-adventure-save');
+}
+
+// Save/Load
+document.getElementById('btn-save').addEventListener('click', () => {
+  localStorage.setItem('text-adventure-save', JSON.stringify(state));
+  print('<span class="hint-text">[Game saved]</span>');
+});
+document.getElementById('btn-load').addEventListener('click', () => {
+  const saved = localStorage.getItem('text-adventure-save');
+  if (!saved) { print('<span class="error-text">No saved game found.</span>'); return; }
+  state = JSON.parse(saved);
+  clearOutput();
+  print('<span class="hint-text">[Game loaded]</span>');
+  doLook();
+});
+document.getElementById('btn-new').addEventListener('click', newGame);
+
+const input = document.getElementById('input-line');
+document.getElementById('btn-enter').addEventListener('click', () => {
+  processCommand(input.value);
+  input.value = '';
+  input.focus();
+});
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    processCommand(input.value);
+    input.value = '';
+  }
+});
+
+newGame();
+</script>
+</body>
+</html>
